@@ -2,23 +2,25 @@
 /**
  * Plugin Name: Riot Comments
  * Description: A lightweight, guest-first interface for native WordPress comments with optional disposable-domain screening.
- * Version: 1.2.0
- * Author: riotrequest
- * Author URI: https://github.com/riotrequest
+ * Version: 1.3.0
  * Requires at least: 6.3
  * Requires PHP: 7.4
- * License: GPL-2.0-or-later
+ * Author: riotrequest
+ * Author URI: https://github.com/riotrequest
+ * License: MIT
+ * License URI: https://opensource.org/license/mit
  * Text Domain: riot-comments
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'RIOT_COMMENTS_VERSION', '1.2.0' );
+define( 'RIOT_COMMENTS_VERSION', '1.3.0' );
 define( 'RIOT_COMMENTS_FILE', __FILE__ );
 
 require __DIR__ . '/screening.php';
 require __DIR__ . '/discussion.php';
 require __DIR__ . '/review.php';
+require __DIR__ . '/incidents.php';
 if ( is_admin() ) {
 	require __DIR__ . '/settings.php';
 }
@@ -31,6 +33,9 @@ function riot_comments_options() {
 		'accent'    => '',
 		'font'      => 'inherit',
 		'mode'      => 'auto',
+		'shape'     => 'square',
+		'eyebrow'   => __( 'Sound off', 'riot-comments' ),
+		'jump'      => 1,
 	) );
 }
 
@@ -116,6 +121,7 @@ function riot_comments_api() {
 			'email'   => $person['comment_author_email'] ?? '',
 			'pending' => riot_comments_pending( $post_id ),
 			'count'   => riot_comments_count_label( $post_id ),
+			'total'   => (int) get_comments_number( $post_id ),
 		);
 		if ( '1' === riot_comments_input( $_GET, 'initial' ) ) {
 			$session['page'] = riot_comments_page( $post_id, riot_comments_order( $_GET ), riot_comments_input( $_GET, 'riot_cursor' ), absint( riot_comments_input( $_GET, 'riot_focus' ) ) );
@@ -135,7 +141,37 @@ function riot_comments_api() {
 add_action( 'wp_ajax_riot_comments_read', 'riot_comments_api' );
 add_action( 'wp_ajax_nopriv_riot_comments_read', 'riot_comments_api' );
 
+/**
+ * Submission guard state. Once a submission starts, every exit path must end in a
+ * deliberate Riot response. Anything else (a plugin calling exit, wp_die, a fatal
+ * error, a redirect) is logged and replaced with a structured error.
+ */
+function &riot_comments_guard() {
+	static $guard = array( 'active' => false, 'done' => false, 'level' => 0, 'ajax' => false, 'stage' => '', 'started' => 0.0 );
+	return $guard;
+}
+
+function riot_comments_guard_stage( $stage ) {
+	$guard          = &riot_comments_guard();
+	$guard['stage'] = $stage;
+}
+
+function riot_comments_guard_done() {
+	$guard         = &riot_comments_guard();
+	$guard['done'] = true;
+}
+
+function riot_comments_guard_output() {
+	$guard  = &riot_comments_guard();
+	$output = '';
+	while ( $guard['level'] && ob_get_level() >= $guard['level'] ) {
+		$output = (string) ob_get_clean() . $output;
+	}
+	return $output;
+}
+
 function riot_comments_error( $result, $status, $post, $draft, $ajax ) {
+	riot_comments_guard_done();
 	if ( $ajax ) {
 		wp_send_json_error( $result, $status );
 	}
@@ -146,7 +182,7 @@ function riot_comments_error( $result, $status, $post, $draft, $ajax ) {
 	echo '><head><meta charset="' . esc_attr( get_option( 'blog_charset' ) ) . '"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">';
 	echo '<title>' . esc_html__( 'Comment submission', 'riot-comments' ) . '</title>';
 	echo '<link rel="stylesheet" href="' . esc_url( add_query_arg( 'ver', RIOT_COMMENTS_VERSION, plugins_url( 'comments.css', __FILE__ ) ) ) . '"></head>';
-	echo '<body><main class="riot-discussion riot-retry" data-mode="auto"><h1>' . esc_html__( 'Your comment was not posted', 'riot-comments' ) . '</h1>';
+	echo '<body><main class="riot-discussion riot-retry" data-mode="auto" data-shape="' . esc_attr( riot_comments_options()['shape'] ) . '"><h1>' . esc_html__( 'Your comment was not posted', 'riot-comments' ) . '</h1>';
 	riot_comments_feedback( $result, 'riot-receipt' );
 	if ( $post && riot_comments_readable( $post->ID ) ) {
 		if ( comments_open( $post->ID ) ) {
@@ -167,6 +203,66 @@ function riot_comments_error( $result, $status, $post, $draft, $ajax ) {
 		echo '<p><a href="' . esc_url( get_permalink( $post ) . '#comments' ) . '">' . esc_html__( 'Back to the discussion', 'riot-comments' ) . '</a></p>';
 	}
 	echo '</main></body></html>';
+	exit;
+}
+
+function riot_comments_retry_result( $http = 0 ) {
+	return array(
+		'status' => 'failed',
+		'reason' => 'server',
+		'retry'  => true,
+		'http'   => (int) $http,
+		'title'  => __( 'Not posted yet.', 'riot-comments' ),
+		'detail' => __( 'The site hit a snag while saving your comment. Your draft is safe. Please try again.', 'riot-comments' ),
+		'message' => __( 'The site hit a snag while saving your comment. Your draft is safe. Please try again.', 'riot-comments' ),
+	);
+}
+
+/**
+ * Finish a stored submission. Also used to replay a submission whose first
+ * response never reached the browser.
+ */
+function riot_comments_finish( $comment, $post_id, $consent, $ajax, $fail ) {
+	$comment = get_comment( $comment->comment_ID );
+	$status  = $comment ? wp_get_comment_status( $comment ) : '';
+	if ( 'spam' === $status || 'trash' === $status ) {
+		$fail( riot_comments_result( 'spam' ), 403 );
+	}
+	if ( ! in_array( $status, array( 'approved', 'unapproved' ), true ) ) {
+		$fail( __( 'Your comment could not be posted. Please review your draft and try again.', 'riot-comments' ), 403 );
+	}
+	riot_comments_guard_stage( 'respond' );
+	$public = 'approved' === $status;
+	if ( ! $public ) {
+		// Re-issuing keeps the private preview working when an earlier response was lost.
+		update_comment_meta( $comment->comment_ID, '_riot_review_owner', riot_comments_review_owner( true ) );
+	}
+	do_action( 'set_comment_cookies', $comment, wp_get_current_user(), $consent );
+	$screen = get_comment_meta( $comment->comment_ID, '_riot_email_screening', true );
+	$result = riot_comments_result( $public ? 'published' : 'pending', ! $public && 'disposable' === $screen ? 'disposable_email' : '' );
+	if ( $ajax ) {
+		riot_comments_guard_done();
+		wp_send_json_success( $result + array(
+			'id'     => (int) $comment->comment_ID,
+			'parent' => (int) $comment->comment_parent,
+			'html'   => riot_comments_item( $comment, array(), $public, ! $public ),
+			'count'  => riot_comments_count_label( $post_id ),
+			'total'  => (int) get_comments_number( $post_id ),
+		) );
+	}
+
+	$query = array( 'riot_posted' => $public ? 'yes' : 'held' );
+	if ( $public ) {
+		$query['riot_focus'] = $comment->comment_ID;
+	} else {
+		$query['riot_receipt'] = $comment->comment_ID;
+		if ( $comment->comment_parent ) {
+			$query['riot_focus'] = $comment->comment_parent;
+		}
+	}
+	$location = add_query_arg( $query, get_permalink( $post_id ) ) . ( $public ? '#comment-' . $comment->comment_ID : '#comments' );
+	riot_comments_guard_done();
+	wp_safe_redirect( apply_filters( 'comment_post_redirect', $location, $comment ), 303 );
 	exit;
 }
 
@@ -193,6 +289,68 @@ add_action( 'wp_loaded', function () {
 		riot_comments_error( $result, $status, $post, $draft, $ajax );
 	};
 
+	// Everything from here on is buffered so a stray exit can still be answered properly.
+	$guard            = &riot_comments_guard();
+	$guard['active']  = true;
+	$guard['ajax']    = $ajax;
+	$guard['started'] = microtime( true );
+	$guard['stage']   = 'validate';
+	ob_start();
+	$guard['level'] = ob_get_level();
+
+	add_action( 'shutdown', static function () use ( $fail, $post_id ) {
+		$guard = &riot_comments_guard();
+		if ( ! $guard['active'] || $guard['done'] ) {
+			return;
+		}
+		$output = riot_comments_guard_output();
+		$http   = http_response_code();
+		$error  = error_get_last();
+		// Antispam Bee can discard spam with an immediate HTTP 403 instead of storing a row.
+		if ( 403 === $http && 'Spam deleted.' === trim( $output ) ) {
+			$fail( riot_comments_result( 'spam' ), 403 );
+		}
+		riot_comments_incident( 'unexpected_exit', array(
+			'stage'  => $guard['stage'],
+			'http'   => $http,
+			'post'   => $post_id,
+			'output' => $output,
+			'error'  => $error,
+			'ms'     => (int) round( ( microtime( true ) - $guard['started'] ) * 1000 ),
+		) );
+		if ( headers_sent() ) {
+			return;
+		}
+		header_remove( 'Location' );
+		$fail( riot_comments_retry_result( $http ), 500 );
+	}, 0 );
+
+	// Plugins (and WordPress's own fatal-error screen) stop requests through wp_die.
+	$die = static function () use ( $fail, $post_id ) {
+		return static function ( $message = '', $title = '', $args = array() ) use ( $fail, $post_id ) {
+			$guard = &riot_comments_guard();
+			$args  = is_array( $args ) ? $args : array();
+			$code  = (int) ( $args['response'] ?? 500 );
+			$text  = is_wp_error( $message ) ? $message->get_error_message() : ( is_scalar( $message ) ? (string) $message : '' );
+			riot_comments_incident( 'wp_die', array(
+				'stage'  => $guard['stage'],
+				'http'   => $code,
+				'post'   => $post_id,
+				'output' => $text,
+				'error'  => error_get_last(),
+				'ms'     => (int) round( ( microtime( true ) - $guard['started'] ) * 1000 ),
+			) );
+			riot_comments_guard_output();
+			if ( $code >= 500 ) {
+				$fail( riot_comments_retry_result( $code ), $code > 599 ? 500 : $code );
+			}
+			$fail( __( 'The comment could not be submitted. Please review it and try again.', 'riot-comments' ), $code >= 400 && $code <= 499 ? $code : 403 );
+		};
+	};
+	foreach ( array( 'wp_die_handler', 'wp_die_ajax_handler', 'wp_die_json_handler' ) as $hook ) {
+		add_filter( $hook, $die, PHP_INT_MAX );
+	}
+
 	if ( ! $options['enabled'] || ! $post_id || ! riot_comments_readable( $post_id ) || ! comments_open( $post_id ) ) {
 		$fail( __( 'This discussion is closed or unavailable.', 'riot-comments' ), 403 );
 	}
@@ -207,6 +365,17 @@ add_action( 'wp_loaded', function () {
 	}
 	if ( '' !== riot_comments_input( $_POST, 'riot_contact_url' ) ) {
 		$fail( riot_comments_result( 'spam' ), 400 );
+	}
+
+	// A random per-draft key lets the browser retry safely: a repeat returns the stored comment.
+	$attempt     = riot_comments_input( $_POST, 'riot_attempt' );
+	$attempt_key = preg_match( '/\A[A-Za-z0-9-]{16,64}\z/', $attempt ) ? 'riot_attempt_' . md5( wp_hash( $attempt . '|' . $post_id ) ) : '';
+	if ( $attempt_key ) {
+		$previous = get_transient( $attempt_key );
+		$previous = $previous ? get_comment( (int) $previous ) : null;
+		if ( $previous && (int) $previous->comment_post_ID === $post_id ) {
+			riot_comments_finish( $previous, $post_id, $draft['consent'], $ajax, $fail );
+		}
 	}
 
 	$parent = $draft['parent'] ? get_comment( $draft['parent'] ) : null;
@@ -248,47 +417,56 @@ add_action( 'wp_loaded', function () {
 		if ( is_wp_error( $status ) || is_user_logged_in() || 'spam' === $status || 'trash' === $status ) {
 			return $status;
 		}
+		riot_comments_guard_stage( 'screening' );
 		if ( $options['screening'] && '' !== $draft['email'] ) {
 			$screen = riot_comments_screen( strtolower( substr( strrchr( $draft['email'], '@' ), 1 ) ) );
 		}
+		riot_comments_guard_stage( 'insert' );
 		if ( 'disposable' === $screen && 'reject' === $options['action'] ) {
 			return new WP_Error( 'riot_disposable', '', 422 );
 		}
 		return 'disposable' === $screen ? 0 : $status;
 	};
 	add_filter( 'pre_comment_approved', $approval, PHP_INT_MAX );
-	// Some spam plugins terminate in preprocess_comment. Preserve the draft in that path too.
-	add_filter( 'wp_die_handler', static function () use ( $fail ) {
-		return static function () use ( $fail ) {
-			$fail( __( 'The comment could not be submitted. Please review it and try again.', 'riot-comments' ), 403 );
-		};
-	} );
 
-	$bee_buffer = 0;
-	if ( class_exists( 'Antispam_Bee' ) ) {
-		ob_start();
-		$bee_buffer = ob_get_level();
-		// Antispam Bee can discard spam with an immediate HTTP 403 instead of storing a row.
-		add_action( 'shutdown', static function () use ( &$bee_buffer, $fail ) {
-			if ( $bee_buffer && ob_get_level() === $bee_buffer && 403 === http_response_code() && 'Spam deleted.' === trim( ob_get_contents() ) ) {
-				ob_end_clean();
-				$bee_buffer = 0;
-				$fail( riot_comments_result( 'spam' ), 403 );
-			}
-		}, 0 );
+	// Record everything the moment the row exists, before any notification work can fail.
+	$stored = static function ( $comment_id, $approved ) use ( $attempt_key, &$screen ) {
+		riot_comments_guard_stage( 'after_insert' );
+		if ( $attempt_key ) {
+			set_transient( $attempt_key, (int) $comment_id, 15 * MINUTE_IN_SECONDS );
+		}
+		if ( 'off' !== $screen ) {
+			add_comment_meta( $comment_id, '_riot_email_screening', $screen, true );
+		}
+		if ( 0 === $approved || '0' === $approved ) {
+			add_comment_meta( $comment_id, '_riot_review_owner', riot_comments_review_owner( true ), true );
+		}
+	};
+	add_action( 'comment_post', $stored, 0, 2 );
+
+	riot_comments_guard_stage( 'spam_checks' );
+	try {
+		$comment = wp_handle_comment_submission( array(
+			'comment_post_ID' => $post_id,
+			'comment_parent'  => $draft['parent'],
+			'author'          => $draft['author'],
+			'email'           => $draft['email'],
+			'comment'         => $draft['comment'],
+		) );
+	} catch ( Throwable $error ) {
+		$guard = &riot_comments_guard();
+		riot_comments_incident( 'exception', array(
+			'stage' => $guard['stage'],
+			'http'  => 500,
+			'post'  => $post_id,
+			'error' => array( 'message' => get_class( $error ) . ': ' . $error->getMessage(), 'file' => $error->getFile(), 'line' => $error->getLine() ),
+			'ms'    => (int) round( ( microtime( true ) - $guard['started'] ) * 1000 ),
+		) );
+		$fail( riot_comments_retry_result( 500 ), 500 );
 	}
-	$comment = wp_handle_comment_submission( array(
-		'comment_post_ID' => $post_id,
-		'comment_parent'  => $draft['parent'],
-		'author'          => $draft['author'],
-		'email'           => $draft['email'],
-		'comment'         => $draft['comment'],
-	) );
-	if ( $bee_buffer && ob_get_level() === $bee_buffer ) {
-		ob_end_flush();
-	}
-	$bee_buffer = 0;
 	remove_filter( 'pre_comment_approved', $approval, PHP_INT_MAX );
+	remove_action( 'comment_post', $stored, 0 );
+
 	if ( is_wp_error( $comment ) ) {
 		if ( 'riot_disposable' === $comment->get_error_code() ) {
 			$fail( riot_comments_result( 'rejected', 'disposable_email' ), 422 );
@@ -299,45 +477,20 @@ add_action( 'wp_loaded', function () {
 			'comment_duplicate' => __( 'You already posted this comment.', 'riot-comments' ),
 			'comment_flood'     => __( 'You are posting too quickly. Wait a moment and try again.', 'riot-comments' ),
 		);
-		$fail( $messages[ $comment->get_error_code() ] ?? __( 'The comment could not be submitted. Your draft is still here.', 'riot-comments' ), $code >= 400 && $code <= 599 ? $code : 400 );
-	}
-
-	if ( 'off' !== $screen ) {
-		add_comment_meta( $comment->comment_ID, '_riot_email_screening', $screen, true );
-	}
-	$comment = get_comment( $comment->comment_ID );
-	$status  = wp_get_comment_status( $comment );
-	if ( 'spam' === $status || 'trash' === $status ) {
-		$fail( riot_comments_result( 'spam' ), 403 );
-	}
-	if ( ! in_array( $status, array( 'approved', 'unapproved' ), true ) ) {
-		$fail( __( 'Your comment could not be posted. Please review your draft and try again.', 'riot-comments' ), 403 );
-	}
-	$public = 'approved' === $status;
-	if ( ! $public ) {
-		add_comment_meta( $comment->comment_ID, '_riot_review_owner', riot_comments_review_owner( true ), true );
-	}
-	do_action( 'set_comment_cookies', $comment, wp_get_current_user(), $draft['consent'] );
-	$result = riot_comments_result( $public ? 'published' : 'pending', ! $public && 'disposable' === $screen ? 'disposable_email' : '' );
-	if ( $ajax ) {
-		wp_send_json_success( $result + array(
-			'id'      => (int) $comment->comment_ID,
-			'parent'  => (int) $comment->comment_parent,
-			'html'    => riot_comments_item( $comment, array(), $public, ! $public ),
-			'count'   => riot_comments_count_label( $post_id ),
-		) );
-	}
-
-	$query = array( 'riot_posted' => $public ? 'yes' : 'held' );
-	if ( $public ) {
-		$query['riot_focus'] = $comment->comment_ID;
-	} else {
-		$query['riot_receipt'] = $comment->comment_ID;
-		if ( $comment->comment_parent ) {
-			$query['riot_focus'] = $comment->comment_parent;
+		if ( ! isset( $messages[ $comment->get_error_code() ] ) ) {
+			$guard = &riot_comments_guard();
+			riot_comments_incident( 'wp_error', array(
+				'stage'  => $guard['stage'],
+				'http'   => $code,
+				'post'   => $post_id,
+				'output' => $comment->get_error_code() . ': ' . $comment->get_error_message(),
+			) );
 		}
+		if ( $code >= 500 ) {
+			$fail( riot_comments_retry_result( $code ), $code > 599 ? 500 : $code );
+		}
+		$fail( $messages[ $comment->get_error_code() ] ?? __( 'The comment could not be submitted. Your draft is still here.', 'riot-comments' ), $code >= 400 && $code <= 499 ? $code : 400 );
 	}
-	$location = add_query_arg( $query, get_permalink( $post_id ) ) . ( $public ? '#comment-' . $comment->comment_ID : '#comments' );
-	wp_safe_redirect( apply_filters( 'comment_post_redirect', $location, $comment ), 303 );
-	exit;
+
+	riot_comments_finish( $comment, $post_id, $draft['consent'], $ajax, $fail );
 }, 20 );

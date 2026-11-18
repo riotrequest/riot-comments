@@ -1,14 +1,15 @@
 === Riot Comments ===
 Requires at least: 6.3
 Requires PHP: 7.4
-Stable tag: 1.2.0
-License: GPLv2 or later
+Stable tag: 1.3.0
+License: MIT
+License URI: https://opensource.org/license/mit
 
 Guest-first discussions, native WordPress moderation, and optional disposable-domain screening.
 
 == Installation ==
 
-1. Open Plugins > Add New Plugin > Upload Plugin in WordPress and upload riot-comments-1.2.0.zip.
+1. Open Plugins > Add New Plugin > Upload Plugin in WordPress and upload riot-comments-1.3.0.zip.
 2. Activate Riot Comments, then open Settings > Riot Comments. The replacement and disposable-domain screening are enabled by default.
 3. Purge any full-page cache and open a published article with comments enabled.
 
@@ -33,6 +34,16 @@ Riot Comments checks the email format locally and sends only the normalized doma
 The Settings screen shows each provider's latest result and last error. Clear domain verdict cache invalidates existing verdicts immediately. Older entries expire naturally. Instances keep their own settings and cache.
 
 == Changelog ==
+
+= 1.3.0 =
+* Every submission now ends in a clear, structured answer. If another plugin, a PHP error, or the host interrupts a submission, readers see what happened, their draft is kept, and the cause is recorded under Settings > Riot Comments > Submission problems.
+* A failed connection or server error is retried once automatically. Each draft carries a one-time key, so a retry can never post the same comment twice.
+* Private previews and screening results are recorded the moment WordPress stores the comment.
+* New editorial look: eyebrow label, count chip, accent call-to-action, colored initials, Author badge, segmented sorting, status-colored feedback, and relative timestamps.
+* Copy-link action on each comment, Ctrl/Cmd + Enter to post, and a composer that grows as you type.
+* Optional floating Comments button that jumps readers to the discussion.
+* New settings: Corners (square or rounded), Eyebrow label, and Jump button.
+* Relicensed under the MIT License.
 
 = 1.2.0 =
 * Show accessible inline feedback for publication, moderation, disposable email holds and rejections, and spam blocks.

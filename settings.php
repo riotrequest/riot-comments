@@ -17,9 +17,22 @@ add_action( 'admin_init', function () {
 				'accent'    => is_string( $input['accent'] ?? null ) ? sanitize_hex_color( trim( $input['accent'] ) ) ?: '' : '',
 				'font'      => in_array( $input['font'] ?? '', array( 'serif', 'sans' ), true ) ? $input['font'] : 'inherit',
 				'mode'      => in_array( $input['mode'] ?? '', array( 'light', 'dark' ), true ) ? $input['mode'] : 'auto',
+				'shape'     => 'round' === ( $input['shape'] ?? '' ) ? 'round' : 'square',
+				'eyebrow'   => is_string( $input['eyebrow'] ?? null ) ? sanitize_text_field( $input['eyebrow'] ) : '',
+				'jump'      => ! empty( $input['jump'] ) ? 1 : 0,
 			);
 		},
 	) );
+} );
+
+add_action( 'admin_post_riot_comments_clear_incidents', function () {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'You do not have permission to do that.', 'riot-comments' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'riot_comments_clear_incidents' );
+	delete_option( 'riot_comments_incidents' );
+	wp_safe_redirect( add_query_arg( array( 'page' => 'riot-comments' ), admin_url( 'options-general.php' ) ) . '#riot-incidents' );
+	exit;
 } );
 
 add_action( 'admin_post_riot_comments_clear_cache', function () {
@@ -36,12 +49,13 @@ add_action( 'admin_post_riot_comments_clear_cache', function () {
 function riot_comments_settings_page() {
 	$options = riot_comments_options();
 	$selects = array(
+		'shape'  => array( 'square' => __( 'Square (editorial)', 'riot-comments' ), 'round' => __( 'Rounded', 'riot-comments' ) ),
 		'mode'   => array( 'auto' => __( 'Follow theme', 'riot-comments' ), 'light' => __( 'Light', 'riot-comments' ), 'dark' => __( 'Dark', 'riot-comments' ) ),
 		'font'   => array( 'inherit' => __( 'Follow theme', 'riot-comments' ), 'sans' => __( 'System sans serif', 'riot-comments' ), 'serif' => __( 'Georgia serif', 'riot-comments' ) ),
 		'action' => array( 'hold' => __( 'Send to moderation', 'riot-comments' ), 'reject' => __( 'Ask for a different address', 'riot-comments' ) ),
 	);
 	$labels = array(
-		'mode' => __( 'Appearance', 'riot-comments' ), 'font' => __( 'Typography', 'riot-comments' ), 'action' => __( 'Disposable email action', 'riot-comments' ),
+		'shape' => __( 'Corners', 'riot-comments' ), 'mode' => __( 'Appearance', 'riot-comments' ), 'font' => __( 'Typography', 'riot-comments' ), 'action' => __( 'Disposable email action', 'riot-comments' ),
 	);
 	?>
 	<div class="wrap">
@@ -63,6 +77,16 @@ function riot_comments_settings_page() {
 					<td><input id="riot-accent" name="riot_comments_settings[accent]" value="<?php echo esc_attr( $options['accent'] ); ?>" maxlength="7" placeholder="#ac3237">
 						<p class="description"><?php esc_html_e( 'Enter a hex color or leave blank to use the theme accent when available.', 'riot-comments' ); ?></p>
 					</td>
+				</tr>
+				<tr>
+					<th scope="row"><label for="riot-eyebrow"><?php esc_html_e( 'Eyebrow label', 'riot-comments' ); ?></label></th>
+					<td><input id="riot-eyebrow" name="riot_comments_settings[eyebrow]" value="<?php echo esc_attr( $options['eyebrow'] ); ?>" maxlength="40" class="regular-text">
+						<p class="description"><?php esc_html_e( 'Small label above “Join the conversation”. Leave blank to hide it.', 'riot-comments' ); ?></p>
+					</td>
+				</tr>
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Jump button', 'riot-comments' ); ?></th>
+					<td><label><input type="checkbox" name="riot_comments_settings[jump]" value="1" <?php checked( $options['jump'] ); ?>> <?php esc_html_e( 'Show a floating Comments button while readers scroll an article', 'riot-comments' ); ?></label></td>
 				</tr>
 				<tr>
 					<th scope="row"><?php esc_html_e( 'Email screening', 'riot-comments' ); ?></th>
@@ -103,6 +127,36 @@ function riot_comments_settings_page() {
 			<?php wp_nonce_field( 'riot_comments_clear_cache' ); ?>
 			<?php submit_button( __( 'Clear domain verdict cache', 'riot-comments' ), 'secondary' ); ?>
 		</form>
+		<?php $incidents = get_option( 'riot_comments_incidents', array() ); ?>
+		<h2 id="riot-incidents"><?php esc_html_e( 'Submission problems', 'riot-comments' ); ?></h2>
+		<p class="description" style="max-width: 720px"><?php esc_html_e( 'Submissions that something other than Riot Comments interrupted: a plugin ending the request, a PHP error, or a host error. Readers saw a clear message and their draft was kept. No comment text or email addresses are stored here.', 'riot-comments' ); ?></p>
+		<?php if ( empty( $incidents ) || ! is_array( $incidents ) ) : ?>
+			<p><?php esc_html_e( 'No problems recorded.', 'riot-comments' ); ?></p>
+		<?php else : ?>
+			<table class="widefat striped" style="max-width: 1100px">
+				<thead><tr><th><?php esc_html_e( 'When', 'riot-comments' ); ?></th><th><?php esc_html_e( 'What', 'riot-comments' ); ?></th><th><?php esc_html_e( 'HTTP', 'riot-comments' ); ?></th><th><?php esc_html_e( 'Details', 'riot-comments' ); ?></th></tr></thead>
+				<tbody>
+					<?php foreach ( $incidents as $incident ) : ?>
+						<tr>
+							<td style="white-space: nowrap"><?php echo esc_html( wp_date( 'M j, H:i:s', (int) ( $incident['time'] ?? 0 ) ) ); ?></td>
+							<td><code><?php echo esc_html( ( $incident['type'] ?? '' ) . ( empty( $incident['stage'] ) ? '' : ' · ' . $incident['stage'] ) ); ?></code>
+								<?php if ( ! empty( $incident['post'] ) ) : ?><br><a href="<?php echo esc_url( get_permalink( (int) $incident['post'] ) ); ?>"><?php echo esc_html( get_the_title( (int) $incident['post'] ) ); ?></a><?php endif; ?></td>
+							<td><?php echo esc_html( $incident['http'] ?? '' ); ?></td>
+							<td style="overflow-wrap: anywhere">
+								<?php if ( ! empty( $incident['error'] ) ) : ?><strong><?php echo esc_html( $incident['error'] ); ?></strong><br><?php endif; ?>
+								<?php echo esc_html( $incident['output'] ?? '' ); ?>
+								<?php if ( ! empty( $incident['agent'] ) ) : ?><br><small><?php echo esc_html( $incident['agent'] . ( empty( $incident['ms'] ) ? '' : ' · ' . $incident['ms'] . ' ms' ) ); ?></small><?php endif; ?>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="riot_comments_clear_incidents">
+				<?php wp_nonce_field( 'riot_comments_clear_incidents' ); ?>
+				<?php submit_button( __( 'Clear log', 'riot-comments' ), 'secondary' ); ?>
+			</form>
+		<?php endif; ?>
 	</div>
 	<?php
 }

@@ -25,20 +25,64 @@
 		};
 
 		async function request(url, options) {
-			const response = await fetch(url, {credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'same-origin', ...options});
-			let result;
+			let response;
 			try {
-				result = await response.json();
+				response = await fetch(url, {credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'same-origin', ...options});
 			} catch {
-				throw new Error(labels.error);
+				// Offline, timed out, blocked, or redirected.
+				const error = new Error(labels.network);
+				error.network = true;
+				error.retryable = true;
+				throw error;
+			}
+			let result = null;
+			try {
+				result = JSON.parse(await response.text());
+			} catch {
+				result = null;
+			}
+			if (!result || typeof result !== 'object' || !('success' in result)) {
+				// Something other than Riot answered: a host error page, firewall, or plugin output.
+				const error = new Error(labels.error);
+				error.status = response.status;
+				error.unreadable = true;
+				error.retryable = response.ok || response.status >= 500 || response.status === 0;
+				throw error;
 			}
 			if (!response.ok || !result.success) {
 				const error = new Error(result.data?.message || labels.error);
 				error.status = response.status;
 				error.result = result.data;
+				error.retryable = Boolean(result.data?.retry);
 				throw error;
 			}
 			return result.data;
+		}
+
+		const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+		const relative = typeof Intl !== 'undefined' && Intl.RelativeTimeFormat ? new Intl.RelativeTimeFormat(document.documentElement.lang || undefined, {numeric: 'auto', style: 'short'}) : null;
+		function relativeTimes(scope = root) {
+			if (!relative) return;
+			const now = Date.now();
+			for (const time of scope.querySelectorAll('.riot-byline time[datetime]')) {
+				const at = Date.parse(time.getAttribute('datetime'));
+				if (Number.isNaN(at)) continue;
+				const seconds = Math.round((at - now) / 1000);
+				if (seconds < -7 * 86400 || seconds > 60) continue;
+				if (!time.dataset.full) time.dataset.full = time.textContent;
+				time.title = time.dataset.full;
+				const steps = [[60, 'second'], [3600, 'minute', 60], [86400, 'hour', 3600], [Infinity, 'day', 86400]];
+				for (const [limit, unit, size = 1] of steps) {
+					if (Math.abs(seconds) < limit) {
+						time.textContent = Math.abs(seconds) < 45 ? relative.format(0, 'second') : relative.format(Math.round(seconds / size), unit);
+						break;
+					}
+				}
+			}
+		}
+		function enhance(scope = root) {
+			relativeTimes(scope);
+			if (navigator.clipboard) for (const button of scope.querySelectorAll('.riot-copy-link[hidden]')) button.hidden = false;
 		}
 
 		function parseItems(html) {
@@ -55,8 +99,15 @@
 			}
 		}
 
-		function setCount(label) {
+		let jump = null;
+		function setCount(label, total) {
 			count.textContent = label;
+			if (Number.isFinite(total)) root.dataset.total = String(total);
+			if (jump) {
+				const value = Number(root.dataset.total) || 0;
+				jump.querySelector('.riot-jump-label').textContent = value ? labels.jump : labels.jumpEmpty;
+				jump.querySelector('.riot-jump-count').textContent = value ? value.toLocaleString() : '';
+			}
 			empty.hidden = list.children.length > 0 || privateList.children.length > 0;
 			toolbar.hidden = !list.querySelector(':scope > li:not([data-riot-pending])');
 			privateSection.hidden = privateList.children.length === 0;
@@ -84,6 +135,7 @@
 				return direction * (dates || Number(item.id) - Number(child.dataset.commentId)) < 0;
 			});
 			target.insertBefore(node, before || null);
+			enhance(node);
 			return node;
 		}
 
@@ -123,7 +175,8 @@
 			}
 			const first = replace ? null : list.children[previousCount]?.querySelector('time')?.parentElement;
 			updatePreviews(result.pending || [...pending.values()]);
-			setCount(result.count);
+			enhance(list);
+			setCount(result.count, result.total);
 			const next = new URL(root.dataset.url);
 			next.searchParams.set('riot_order', order);
 			next.searchParams.set('riot_cursor', result.cursor);
@@ -166,6 +219,20 @@
 
 		const isPlainClick = (event) => !(event.metaKey || event.ctrlKey || event.shiftKey || event.altKey);
 		root.addEventListener('click', (event) => {
+			const copy = event.target.closest('.riot-copy-link');
+			if (copy) {
+				navigator.clipboard?.writeText(copy.dataset.copy).then(() => {
+					const text = copy.querySelector('span');
+					text.dataset.label ||= text.textContent;
+					text.textContent = labels.copied;
+					copy.classList.add('riot-copied');
+					setTimeout(() => {
+						text.textContent = text.dataset.label;
+						copy.classList.remove('riot-copied');
+					}, 1800);
+				}).catch(() => {});
+				return;
+			}
 			const link = event.target.closest('a');
 			if (!link || !isPlainClick(event)) return;
 			if (link.dataset.sort || link === more) {
@@ -179,6 +246,38 @@
 				if (!posting) moveForm('0', '');
 			}
 		});
+
+		enhance(root);
+
+		// A floating shortcut to the discussion for readers deep in the article.
+		if (root.dataset.jump === '1' && 'IntersectionObserver' in window) {
+			jump = document.createElement('a');
+			jump.className = 'riot-jump';
+			jump.href = '#comments';
+			jump.hidden = true;
+			jump.dataset.shape = root.dataset.shape || '';
+			jump.style.setProperty('--riot-jump-accent', getComputedStyle(root).getPropertyValue('--riot-accent').trim() || '#ac3237');
+			jump.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M4 4.5h12a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9l-4 3v-3H4A1.5 1.5 0 0 1 2.5 13V6A1.5 1.5 0 0 1 4 4.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span class="riot-jump-label"></span><span class="riot-jump-count"></span>';
+			document.body.append(jump);
+			setCount(count.textContent);
+			let inView = false;
+			const update = () => {
+				const visible = !inView && scrollY > Math.min(900, innerHeight * 0.9);
+				if (visible === !jump.hidden) return;
+				jump.hidden = !visible;
+			};
+			new IntersectionObserver(([entry]) => {
+				inView = entry.isIntersecting || entry.boundingClientRect.top < 0;
+				update();
+			}).observe(root);
+			addEventListener('scroll', update, {passive: true});
+			jump.addEventListener('click', (event) => {
+				event.preventDefault();
+				root.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
+				const field = root.querySelector('[data-riot-message]');
+				if (field) setTimeout(() => field.focus({preventScroll: true}), 450);
+			});
+		}
 
 		const initialUrl = new URL(location.href);
 		const initialCursor = initialUrl.searchParams.get('riot_cursor') || '';
@@ -243,7 +342,34 @@
 		}
 
 		if (!message.value) message.value = draft() || '';
-		message.addEventListener('input', () => draft(message.value));
+		const grow = () => {
+			message.style.height = 'auto';
+			message.style.height = Math.min(message.scrollHeight + 2, innerHeight * 0.6) + 'px';
+		};
+		message.addEventListener('input', () => {
+			draft(message.value);
+			grow();
+		});
+		message.addEventListener('keydown', (event) => {
+			if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing) {
+				event.preventDefault();
+				form.requestSubmit ? form.requestSubmit() : button.click();
+			}
+		});
+		const hint = form.querySelector('.riot-hint');
+		if (hint && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) hint.textContent = labels.hintMac;
+		if (message.value) requestAnimationFrame(grow);
+
+		// One id per draft: retries of the same text can never create a second comment.
+		let attempt = {key: '', id: ''};
+		const attemptId = () => {
+			const key = parent.value + '|' + message.value;
+			if (attempt.key !== key) {
+				const random = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+				attempt = {key, id: random};
+			}
+			return attempt.id;
+		};
 
 		function updateIdentity() {
 			if (!identity) return;
@@ -284,6 +410,7 @@
 				draft(message.value);
 				parent.value = id;
 				message.value = draft() || '';
+				grow();
 			}
 			const replyTo = id !== '0' && list.querySelector('#comment-' + id + ' > article');
 			if (replyTo) replyTo.after(form);
@@ -342,28 +469,47 @@
 				}
 				showFeedback('submitting', labels.posting);
 				form.setAttribute('aria-busy', 'true');
+				const id = attemptId();
 				const send = () => {
 					const body = new URLSearchParams(new FormData(form));
 					body.set('riot_async', '1');
+					body.set('riot_attempt', id);
 					return request(form.action, {method: 'POST', redirect: 'error', body});
 				};
 				let result;
-				try {
-					result = await send();
-				} catch (error) {
-					if (error.status !== 419) throw error;
-					session = null;
-					if (!(await loadSession())) throw error;
-					result = await send();
+				let refreshed = false;
+				let retried = false;
+				for (;;) {
+					try {
+						result = await send();
+						break;
+					} catch (error) {
+						if (error.status === 419 && !refreshed) {
+							refreshed = true;
+							session = null;
+							if (!(await loadSession())) throw error;
+							continue;
+						}
+						// Hosts occasionally fail one request in a row; the same attempt id makes this safe.
+						if (error.retryable && !retried) {
+							retried = true;
+							showFeedback('submitting', labels.retrying);
+							await sleep(1500);
+							continue;
+						}
+						throw error;
+					}
 				}
 				if (result.status === 'pending') pending.set(result.id, result);
 				const added = insertComment(result);
 				if (result.status === 'published' && !result.parent && order === 'oldest' && more.dataset.cursor) {
 					added.setAttribute('data-riot-later', '');
 				}
-				setCount(result.count);
+				setCount(result.count, result.total);
 				message.value = '';
 				draft('');
+				grow();
+				attempt = {key: '', id: ''};
 				moveForm('0', '', false);
 				if (identity) {
 					identityKnown = Boolean(form.elements.author.value.trim() && form.elements.email.value);
@@ -384,7 +530,11 @@
 				added.scrollIntoView({block: 'nearest'});
 			} catch (error) {
 				const result = error.result || {};
-				showFeedback(result.status || 'failed', result.detail || (error.status ? error.message : labels.submitError), result.title, result.reason);
+				let detail = result.detail || error.message;
+				if (!error.result) {
+					detail = error.network || !error.status ? labels.network : labels.server.replace('%s', () => error.status);
+				}
+				showFeedback(result.status || 'failed', detail, result.title || (result.status && result.status !== 'failed' ? '' : labels.notPosted), result.reason);
 				if (identity && result.status === 'rejected' && result.reason === 'disposable_email') {
 					revealed = true;
 					updateIdentity();

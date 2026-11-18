@@ -123,7 +123,17 @@ function riot_comments_page( $post_id, $order, $cursor = '', $focus = 0 ) {
 		'html'   => $html,
 		'cursor' => $more ? $last->comment_date_gmt . '|' . $last->comment_ID : '',
 		'count'  => riot_comments_count_label( $post_id ),
+		'total'  => (int) get_comments_number( $post_id ),
 	);
+}
+
+function riot_comments_post_author( $post_id ) {
+	static $authors = array();
+	if ( ! isset( $authors[ $post_id ] ) ) {
+		$post = get_post( $post_id );
+		$authors[ $post_id ] = $post ? (int) $post->post_author : 0;
+	}
+	return $authors[ $post_id ];
 }
 
 function riot_comments_item( $comment, $children, $open, $pending = false ) {
@@ -134,14 +144,17 @@ function riot_comments_item( $comment, $children, $open, $pending = false ) {
 	$time    = '<time datetime="' . esc_attr( get_comment_date( DATE_W3C, $comment ) ) . '">' .
 		esc_html( get_comment_date( '', $comment ) . ' · ' . get_comment_date( get_option( 'time_format' ), $comment ) ) . '</time>';
 	$parent = $pending && $comment->comment_parent ? get_comment( $comment->comment_parent ) : null;
+	$is_author = $comment->user_id && (int) $comment->user_id === riot_comments_post_author( (int) $comment->comment_post_ID );
+	$hue = abs( crc32( strtolower( $author ) ) ) % 360;
 	ob_start();
 	?>
 	<li class="riot-comment" id="comment-<?php echo esc_attr( $id ); ?>" data-comment-id="<?php echo esc_attr( $id ); ?>" data-comment-date="<?php echo esc_attr( $comment->comment_date_gmt ); ?>" <?php echo $pending ? 'data-riot-pending' : ''; ?>>
 		<article class="riot-comment-body" tabindex="-1">
-			<span class="riot-avatar" aria-hidden="true"><?php echo esc_html( $initial ); ?></span>
+			<span class="riot-avatar<?php echo $is_author ? ' riot-avatar-author' : ''; ?>" style="--riot-hue: <?php echo esc_attr( $hue ); ?>" aria-hidden="true"><?php echo esc_html( $initial ); ?></span>
 			<div class="riot-comment-content">
 				<header class="riot-byline">
-					<strong><?php echo esc_html( $author ); ?></strong>
+					<strong class="riot-author"><?php echo esc_html( $author ); ?></strong>
+					<?php if ( $is_author ) : ?><span class="riot-badge"><?php esc_html_e( 'Author', 'riot-comments' ); ?></span><?php endif; ?>
 					<?php if ( $pending ) : ?>
 						<?php echo $time; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 						<span class="riot-pending-label"><?php esc_html_e( 'Awaiting approval', 'riot-comments' ); ?></span>
@@ -153,10 +166,19 @@ function riot_comments_item( $comment, $children, $open, $pending = false ) {
 					<p class="riot-pending-parent"><?php echo esc_html( sprintf( __( 'In reply to %s', 'riot-comments' ), get_comment_author( $parent ) ) ); ?></p>
 				<?php endif; ?>
 				<div class="riot-comment-text"><?php echo wp_kses_post( apply_filters( 'comment_text', get_comment_text( $comment ), $comment, array() ) ); ?></div>
-				<?php if ( $open && in_array( $comment->comment_type, array( '', 'comment' ), true ) ) : ?>
-					<a class="riot-reply-link" data-reply="<?php echo esc_attr( $id ); ?>" data-author="<?php echo esc_attr( $author ); ?>" href="<?php echo esc_url( add_query_arg( 'riot_reply', $id, $link ) . '#riot-form' ); ?>">
-						<?php esc_html_e( 'Reply', 'riot-comments' ); ?><span class="riot-sr"><?php echo esc_html( sprintf( __( ' to %s', 'riot-comments' ), $author ) ); ?></span>
-					</a>
+				<?php if ( ! $pending ) : ?>
+					<div class="riot-actions">
+						<?php if ( $open && in_array( $comment->comment_type, array( '', 'comment' ), true ) ) : ?>
+							<a class="riot-reply-link" data-reply="<?php echo esc_attr( $id ); ?>" data-author="<?php echo esc_attr( $author ); ?>" href="<?php echo esc_url( add_query_arg( 'riot_reply', $id, $link ) . '#riot-form' ); ?>">
+								<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.5 3.5 2 8l4.5 4.5M2.5 8H10a4 4 0 0 1 4 4v1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								<?php esc_html_e( 'Reply', 'riot-comments' ); ?><span class="riot-sr"><?php echo esc_html( sprintf( __( ' to %s', 'riot-comments' ), $author ) ); ?></span>
+							</a>
+						<?php endif; ?>
+						<button type="button" class="riot-copy-link" data-copy="<?php echo esc_url( $link . '#comment-' . $id ); ?>" hidden>
+							<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.8 9.2a3 3 0 0 0 4.2 0l2.2-2.2a3 3 0 0 0-4.2-4.2l-.9.9M9.2 6.8a3 3 0 0 0-4.2 0L2.8 9a3 3 0 0 0 4.2 4.2l.9-.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+							<span><?php esc_html_e( 'Copy link', 'riot-comments' ); ?></span>
+						</button>
+					</div>
 				<?php endif; ?>
 			</div>
 		</article>
@@ -222,6 +244,7 @@ function riot_comments_form( $post_id, $draft = array() ) {
 		<input type="hidden" name="riot_token" value="<?php echo esc_attr( riot_comments_token( $post_id ) ); ?>">
 		<div class="riot-form-footer">
 			<?php riot_comments_feedback(); ?>
+			<span class="riot-hint" aria-hidden="true"><?php esc_html_e( 'Ctrl + Enter to post', 'riot-comments' ); ?></span>
 			<button class="riot-primary" type="submit"><?php echo $reply ? esc_html__( 'Post reply', 'riot-comments' ) : esc_html__( 'Post comment', 'riot-comments' ); ?></button>
 		</div>
 	</form>
@@ -270,6 +293,14 @@ function riot_comments_discussion( $post_id ) {
 		'loaded'  => __( 'Comments updated.', 'riot-comments' ),
 		'error'   => __( 'Something went wrong. Please try again.', 'riot-comments' ),
 		'submitError' => __( 'Could not complete the submission. Your draft is still here. Please try again.', 'riot-comments' ),
+		'notPosted' => __( 'Not posted yet.', 'riot-comments' ),
+		'network'   => __( 'We couldn’t reach the site. Check your connection; your draft is safe.', 'riot-comments' ),
+		'server'    => __( 'The site hit a snag (error %s). Your draft is safe. Please try again.', 'riot-comments' ),
+		'retrying'  => __( 'Still working on it…', 'riot-comments' ),
+		'copied'    => __( 'Link copied', 'riot-comments' ),
+		'hintMac'   => __( '⌘ + Enter to post', 'riot-comments' ),
+		'jump'      => __( 'Comments', 'riot-comments' ),
+		'jumpEmpty' => __( 'Comment', 'riot-comments' ),
 		'reply'   => __( 'Replying to %s', 'riot-comments' ),
 		'post'    => __( 'Post comment', 'riot-comments' ),
 		'respond' => __( 'Post reply', 'riot-comments' ),
@@ -278,9 +309,12 @@ function riot_comments_discussion( $post_id ) {
 	);
 	ob_start();
 	?>
-	<section id="comments" class="riot-discussion" data-riot-discussion data-post="<?php echo esc_attr( $post_id ); ?>" data-api="<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>" data-url="<?php echo esc_url( $base ); ?>" data-order="<?php echo esc_attr( $order ); ?>" data-mode="<?php echo esc_attr( $options['mode'] ); ?>" data-font="<?php echo esc_attr( $options['font'] ); ?>" data-labels="<?php echo esc_attr( wp_json_encode( $labels ) ); ?>" <?php if ( sanitize_hex_color( $options['accent'] ) ) : ?>style="--riot-custom-accent: <?php echo esc_attr( $options['accent'] ); ?>"<?php endif; ?> aria-labelledby="riot-title">
+	<section id="comments" class="riot-discussion" data-riot-discussion data-post="<?php echo esc_attr( $post_id ); ?>" data-api="<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>" data-url="<?php echo esc_url( $base ); ?>" data-order="<?php echo esc_attr( $order ); ?>" data-mode="<?php echo esc_attr( $options['mode'] ); ?>" data-shape="<?php echo esc_attr( $options['shape'] ); ?>" data-jump="<?php echo $options['jump'] ? '1' : '0'; ?>" data-total="<?php echo esc_attr( $page['total'] ); ?>" data-font="<?php echo esc_attr( $options['font'] ); ?>" data-labels="<?php echo esc_attr( wp_json_encode( $labels ) ); ?>" <?php if ( sanitize_hex_color( $options['accent'] ) ) : ?>style="--riot-custom-accent: <?php echo esc_attr( $options['accent'] ); ?>"<?php endif; ?> aria-labelledby="riot-title">
 		<header class="riot-heading">
-			<h2 id="riot-title"><?php esc_html_e( 'Join the conversation', 'riot-comments' ); ?></h2>
+			<div class="riot-heading-text">
+				<?php if ( '' !== trim( (string) $options['eyebrow'] ) ) : ?><p class="riot-eyebrow"><?php echo esc_html( $options['eyebrow'] ); ?></p><?php endif; ?>
+				<h2 id="riot-title"><?php esc_html_e( 'Join the conversation', 'riot-comments' ); ?></h2>
+			</div>
 			<span class="riot-count"><?php echo esc_html( $page['count'] ); ?></span>
 		</header>
 		<?php if ( $confirmation ) : ?>

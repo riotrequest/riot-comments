@@ -6,15 +6,17 @@ function riot_comments_review_owner( $create = false ) {
 		return 'user:' . get_current_user_id();
 	}
 
+	static $issued = '';
 	$cookie = 'riot_comment_review_' . COOKIEHASH;
-	$key    = riot_comments_input( $_COOKIE, $cookie );
+	$key    = $issued ?: riot_comments_input( $_COOKIE, $cookie );
 	if ( ! preg_match( '/\A[a-f0-9]{64}\z/', $key ) ) {
 		if ( ! $create ) {
 			return '';
 		}
 		$key = bin2hex( random_bytes( 32 ) );
 	}
-	if ( $create ) {
+	if ( $create && $issued !== $key && ! headers_sent() ) {
+		$issued = $key;
 		setcookie( $cookie, $key, array(
 			'expires'  => time() + WEEK_IN_SECONDS,
 			'path'     => '/',
