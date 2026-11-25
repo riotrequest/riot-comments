@@ -52,6 +52,45 @@ function riot_comments_pending( $post_id ) {
 	return array_map( 'riot_comments_private_item', $comments );
 }
 
+/**
+ * Current status of this browser's own held comments, so a preview can turn into the
+ * published comment once a moderator (or the AI moderator) approves it. Comments that
+ * belong to someone else are reported as gone, which reveals nothing.
+ */
+function riot_comments_receipt( $post_id, $ids ) {
+	$owner = riot_comments_review_owner();
+	$ids   = array_slice( array_unique( array_filter( array_map( 'absint', explode( ',', (string) $ids ) ) ) ), 0, 10 );
+	$open  = comments_open( $post_id ) && ( is_user_logged_in() || ! get_option( 'comment_registration' ) );
+	$items = array();
+	$approved = array();
+	foreach ( $ids as $id ) {
+		$comment = $owner ? get_comment( $id ) : null;
+		if ( ! $comment || (int) $comment->comment_post_ID !== $post_id || get_comment_meta( $id, '_riot_review_owner', true ) !== $owner ) {
+			$items[] = array( 'id' => $id, 'status' => 'gone' );
+			continue;
+		}
+		$status = wp_get_comment_status( $comment );
+		if ( 'approved' === $status ) {
+			$approved[ $id ] = $comment;
+			$items[] = array(
+				'id'     => $id,
+				'status' => 'approved',
+				'parent' => (int) $comment->comment_parent,
+			);
+		} else {
+			$items[] = array( 'id' => $id, 'status' => 'unapproved' === $status ? 'pending' : 'gone' );
+		}
+	}
+	$likes = riot_comments_like_states( array_keys( $approved ) );
+	foreach ( $items as &$item ) {
+		if ( isset( $approved[ $item['id'] ] ) ) {
+			$item['html'] = riot_comments_item( $approved[ $item['id'] ], array(), $open, false, $likes );
+		}
+	}
+	unset( $item );
+	return $items;
+}
+
 // Only the explicit non-JavaScript receipt can contain private previews in HTML.
 add_action( 'template_redirect', function () {
 	if ( is_singular() && in_array( riot_comments_input( $_GET, 'riot_posted' ), array( 'held', 'yes' ), true ) ) {

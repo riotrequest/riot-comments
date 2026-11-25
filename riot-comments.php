@@ -1,8 +1,10 @@
 <?php
 /**
  * Plugin Name: Riot Comments
+ * Plugin URI: https://github.com/riotrequest/riot-comments
  * Description: A lightweight, guest-first interface for native WordPress comments with optional disposable-domain screening.
- * Version: 1.3.0
+ * Version: 1.3.5
+ * Update URI: https://github.com/riotrequest/riot-comments
  * Requires at least: 6.3
  * Requires PHP: 7.4
  * Author: riotrequest
@@ -14,12 +16,56 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'RIOT_COMMENTS_VERSION', '1.3.0' );
+define( 'RIOT_COMMENTS_VERSION', '1.3.5' );
 define( 'RIOT_COMMENTS_FILE', __FILE__ );
+
+function riot_comments_release_update( $update, $plugin_data, $plugin_file ) {
+	$slug = 'riot-comments';
+	$repo = "riotrequest/$slug";
+	$repository = "https://github.com/$repo";
+	// The ZIP must preserve the installed plugin directory.
+	if ( $update || "$slug/$slug.php" !== $plugin_file || $repository !== ( $plugin_data['UpdateURI'] ?? '' ) ) {
+		return $update;
+	}
+
+	$response = wp_safe_remote_get( "https://api.github.com/repos/$repo/releases/latest", array(
+		'timeout'     => 5,
+		'redirection' => 0,
+		'user-agent'  => $slug,
+		'headers'     => array( 'Accept' => 'application/vnd.github+json' ),
+	) );
+	if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+		return $update;
+	}
+
+	$release = json_decode( wp_remote_retrieve_body( $response ), true );
+	$tag = $release['tag_name'] ?? '';
+	if ( ! is_string( $tag ) || ! preg_match( '/^v([0-9]+\.[0-9]+\.[0-9]+)$/D', $tag, $version )
+		|| ! empty( $release['draft'] ) || ! empty( $release['prerelease'] ) ) {
+		return $update;
+	}
+
+	$filename = "$slug.zip";
+	$package = "$repository/releases/download/$tag/$filename";
+	foreach ( (array) ( $release['assets'] ?? array() ) as $asset ) {
+		if ( $filename === ( $asset['name'] ?? '' ) && 'uploaded' === ( $asset['state'] ?? '' )
+			&& $package === ( $asset['browser_download_url'] ?? '' ) ) {
+			return array(
+				'slug'    => $slug,
+				'version' => $version[1],
+				'url'     => "$repository/releases/tag/$tag",
+				'package' => $package,
+			);
+		}
+	}
+	return $update;
+}
+add_filter( 'update_plugins_github.com', 'riot_comments_release_update', 10, 3 );
 
 require __DIR__ . '/screening.php';
 require __DIR__ . '/discussion.php';
 require __DIR__ . '/review.php';
+require __DIR__ . '/likes.php';
 require __DIR__ . '/incidents.php';
 if ( is_admin() ) {
 	require __DIR__ . '/settings.php';
@@ -124,12 +170,26 @@ function riot_comments_api() {
 			'total'   => (int) get_comments_number( $post_id ),
 		);
 		if ( '1' === riot_comments_input( $_GET, 'initial' ) ) {
-			$session['page'] = riot_comments_page( $post_id, riot_comments_order( $_GET ), riot_comments_input( $_GET, 'riot_cursor' ), absint( riot_comments_input( $_GET, 'riot_focus' ) ) );
+			$session['page'] = riot_comments_page( $post_id, riot_comments_order( $_GET ), riot_comments_input( $_GET, 'riot_cursor' ), absint( riot_comments_input( $_GET, 'riot_focus' ) ), true );
 		}
 		wp_send_json_success( $session );
 	}
+	if ( 'receipt' === riot_comments_input( $_GET, 'view' ) ) {
+		if ( ! $private ) {
+			wp_send_json_error( array( 'message' => __( 'This receipt is unavailable.', 'riot-comments' ) ), 403 );
+		}
+		nocache_headers();
+		header( 'Cache-Control: private, no-store, max-age=0', true );
+		wp_send_json_success( array(
+			'items' => riot_comments_receipt( $post_id, riot_comments_input( $_GET, 'ids' ) ),
+			'count' => riot_comments_count_label( $post_id ),
+			'total' => (int) get_comments_number( $post_id ),
+			'live'  => riot_comments_result( 'published' ),
+			'closed' => riot_comments_result( 'spam' ),
+		) );
+	}
 	$order = riot_comments_order( $_GET );
-	$page  = riot_comments_page( $post_id, $order, riot_comments_input( $_GET, 'riot_cursor' ), absint( riot_comments_input( $_GET, 'riot_focus' ) ) );
+	$page  = riot_comments_page( $post_id, $order, riot_comments_input( $_GET, 'riot_cursor' ), absint( riot_comments_input( $_GET, 'riot_focus' ) ), $private );
 	if ( $private ) {
 		nocache_headers();
 		header( 'Cache-Control: private, no-store, max-age=0', true );
@@ -245,7 +305,7 @@ function riot_comments_finish( $comment, $post_id, $consent, $ajax, $fail ) {
 		wp_send_json_success( $result + array(
 			'id'     => (int) $comment->comment_ID,
 			'parent' => (int) $comment->comment_parent,
-			'html'   => riot_comments_item( $comment, array(), $public, ! $public ),
+			'html'   => riot_comments_item( $comment, array(), $public, ! $public, $public ? riot_comments_like_states( array( (int) $comment->comment_ID ) ) : null ),
 			'count'  => riot_comments_count_label( $post_id ),
 			'total'  => (int) get_comments_number( $post_id ),
 		) );

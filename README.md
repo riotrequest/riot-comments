@@ -11,6 +11,7 @@ Readers start with **“What’s on your mind?”** and an empty box. They can w
 - **Write first.** Riot opens the name and email fields inline at submission. Signed-in readers and guests who chose to save their details can post directly.
 - **Stay in the thread.** Reply in place, switch between newest and oldest, or load more comments without reloading the article.
 - **See what happened.** A published comment appears immediately and updates the public count. A pending comment gets a private **Awaiting approval** preview. Rejections leave the draft in the composer.
+- **React with a thumbs-up.** Readers can like or undo a like on published comments and replies.
 - **Never lose a comment to a hiccup.** If the connection or the server fails, Riot retries once on its own. Each draft carries a one-time key, so a retry can't post the same comment twice.
 - **Find the discussion fast.** An optional floating **Comments** button follows readers down the article and drops them straight into the composer.
 - **Small comforts.** The composer grows as you type, **Ctrl/⌘ + Enter** posts, recent comments show times like "5m ago", and every comment has a **Copy link** action.
@@ -33,19 +34,18 @@ Riot borrows your theme's colors and fonts when it can (it reads common variable
 
 ## Install
 
-Clone the repository and build a WordPress-ready ZIP from the tracked files.
-
-```sh
-git clone https://github.com/riotrequest/riot-comments.git
-cd riot-comments
-git archive --format=zip --prefix=riot-comments/ -o ../riot-comments.zip HEAD
-```
-
-1. In WordPress, open **Plugins → Add New Plugin → Upload Plugin** and choose the ZIP.
-2. Activate **Riot Comments**, then open **Settings → Riot Comments** for appearance and screening options.
-3. Purge your site's page cache and open an article with comments enabled.
+1. Download `riot-comments.zip` from the [latest release](https://github.com/riotrequest/riot-comments/releases/latest).
+2. In WordPress, open **Plugins → Add New Plugin → Upload Plugin** and choose the ZIP.
+3. Activate **Riot Comments**, then open **Settings → Riot Comments** for appearance and screening options.
+4. Purge your site's page cache and open an article with comments enabled.
 
 Riot works with standard classic and block comment templates. Use `[riot_comments]` on a post or page when the theme omits the comment area. To return to the theme's original comment form, disable **Use Riot Comments** in settings and purge the page cache. Comments and moderation history stay in WordPress.
+
+## Update from WordPress
+
+Upload version 1.3.5 or later once to an older install and choose **Replace current with uploaded**. After that, WordPress offers new stable GitHub releases under **Plugins** and **Dashboard → Updates** while Riot Comments is active in `wp-content/plugins/riot-comments/`. WordPress can install them automatically if you choose **Enable auto-updates** on the Plugins screen.
+
+Update checks use the public GitHub Releases API and require no GitHub credentials.
 
 ## Email screening and privacy
 
@@ -58,6 +58,16 @@ Email addresses stay private. Guests can opt in to WordPress commenter cookies t
 Riot answers every submission itself. If another plugin, a PHP error, or the host interrupts one (a `wp_die()`, an `exit`, an exception, a redirect, or a host error page), the reader sees a clear **Not posted yet** message and Riot records what happened under **Settings → Riot Comments → Submission problems**: the time, the stage (validation, spam checks, screening, insert), the HTTP status, and the error or output that ended the request. The log stores no comment text, names, or email addresses.
 
 If a comment is blocked as spam, Riot is reporting your spam plugin's decision. With Antispam Bee, the reason is stored on the comment (`antispam_bee_reason`). Note that its local spam-database check also matches the author's website and IP, so a test comment from your own account can teach it to block you.
+
+## Publish a release
+
+Update the version in the main PHP file and in [readme.txt](readme.txt), then commit and tag it with the matching `vX.Y.Z`. Build the ZIP from that tag, push the commit and tag, then attach the ZIP to the stable release. Keep the archive and asset names shown below.
+
+```sh
+tag=v1.3.5
+git archive --format=zip --prefix=riot-comments/ -o ../riot-comments.zip "$tag"
+gh release create "$tag" ../riot-comments.zip --verify-tag --latest --generate-notes
+```
 
 ## License
 

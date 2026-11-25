@@ -328,7 +328,7 @@
 .riot-comment-text p { margin: 0.35rem 0 0.5rem; }
 .riot-comment-text img { max-inline-size: 100%; height: auto; }
 .riot-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 1rem; margin-inline-start: -0.1rem; }
-.riot-discussion :where(.riot-reply-link, .riot-copy-link) {
+.riot-discussion :where(.riot-reply-link, .riot-copy-link, .riot-like) {
 	display: inline-flex;
 	align-items: center;
 	gap: 0.35rem;
@@ -344,7 +344,10 @@
 	text-decoration: none;
 	cursor: pointer;
 }
-.riot-discussion :where(.riot-reply-link, .riot-copy-link):hover { color: var(--riot-accent); }
+.riot-discussion :where(.riot-reply-link, .riot-copy-link, .riot-like):hover { color: var(--riot-accent); }
+.riot-discussion .riot-like { padding-inline: 0.35rem; font-variant-numeric: tabular-nums; }
+.riot-discussion .riot-like[aria-pressed="true"] { color: var(--riot-accent); }
+.riot-discussion .riot-like[aria-disabled="true"] { opacity: 0.65; cursor: wait; }
 .riot-discussion .riot-copied { color: var(--riot-good); }
 .riot-actions svg { inline-size: 0.95rem; block-size: 0.95rem; flex: none; }
 .riot-pending-label {
@@ -368,7 +371,7 @@
 }
 .riot-discussion .riot-children .riot-comment-body { border-block-start: 0; padding-block-start: 0.7rem; }
 .riot-discussion .riot-children .riot-avatar { flex-basis: 1.85rem; block-size: 1.85rem; font-size: 0.875rem; }
-.riot-discussion .riot-children .riot-children .riot-children { margin-inline-start: 0; padding-inline-start: 0; border: 0; }
+.riot-discussion .riot-children .riot-children { margin-inline-start: 0; padding-inline-start: 0; border: 0; }
 .riot-discussion .riot-comment > .riot-form { margin-block: 0.25rem 0.85rem; }
 .riot-empty { margin: 0.5rem 0; font-size: 0.9375rem; }
 .riot-more {
@@ -444,7 +447,6 @@
 @media (max-width: 520px) {
 	.riot-fields { grid-template-columns: 1fr; }
 	.riot-discussion .riot-children { margin-inline-start: 0.6rem; padding-inline-start: 0.6rem; }
-	.riot-discussion .riot-children .riot-children { margin-inline-start: 0; padding-inline-start: 0; border: 0; }
 	.riot-remember { min-height: 44px; }
 	.riot-primary { flex: 1 1 100%; justify-content: center; }
 }

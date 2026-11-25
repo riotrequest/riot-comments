@@ -16,6 +16,8 @@
 		let posting = false;
 		let readRequested = false;
 		let pending = new Map();
+		let likeQueue = Promise.resolve();
+		const likesInFlight = new Set();
 
 		const api = async (params) => {
 			const url = new URL(root.dataset.api);
@@ -199,6 +201,7 @@
 			listStatus.classList.remove('riot-sr');
 			listStatus.textContent = labels.loading;
 			try {
+				await likeQueue;
 				const result = await api({riot_order: sort, riot_cursor: cursor});
 				applyPage(result, sort, cursor);
 				if (!cursor) {
@@ -217,8 +220,45 @@
 			}
 		}
 
+		function setLike(button) {
+			const id = button.dataset.like;
+			if (reading || likesInFlight.has(id)) return;
+			likesInFlight.add(id);
+			button.setAttribute('aria-disabled', 'true');
+			const liked = button.getAttribute('aria-pressed') !== 'true';
+			// Serialize clicks so the browser retains its guest cookie before a second vote starts.
+			likeQueue = likeQueue.then(async () => {
+				const body = new FormData();
+				for (const [key, value] of Object.entries({
+					action: 'riot_comments_like', post: root.dataset.post, comment: id, liked: liked ? '1' : '0'
+				})) body.set(key, value);
+				try {
+					const result = await request(new URL(root.dataset.api), {
+						method: 'POST', headers: {'X-Riot-Comments': '1'}, body, signal: AbortSignal.timeout?.(5000)
+					});
+					button.setAttribute('aria-pressed', String(result.liked));
+					button.querySelector('[data-like-count]').textContent = result.total.toLocaleString(document.documentElement.lang || undefined);
+					if (listStatus.textContent === labels.likeError) {
+						listStatus.textContent = '';
+						listStatus.classList.add('riot-sr');
+					}
+				} catch {
+					listStatus.classList.remove('riot-sr');
+					listStatus.textContent = labels.likeError;
+				} finally {
+					likesInFlight.delete(id);
+					button.removeAttribute('aria-disabled');
+				}
+			});
+		}
+
 		const isPlainClick = (event) => !(event.metaKey || event.ctrlKey || event.shiftKey || event.altKey);
 		root.addEventListener('click', (event) => {
+			const like = event.target.closest('[data-like]');
+			if (like) {
+				setLike(like);
+				return;
+			}
 			const copy = event.target.closest('.riot-copy-link');
 			if (copy) {
 				navigator.clipboard?.writeText(copy.dataset.copy).then(() => {
@@ -300,8 +340,26 @@
 			}).catch(() => null);
 		}
 
+		// Start the private session only when the reader nears the discussion or starts writing.
+		// Most readers never reach the comments, and every session is an uncached request.
+		const urgent = /^#(comments|comment-\d+|riot-form)$/.test(location.hash) ||
+			['riot_posted', 'riot_focus', 'riot_cursor', 'riot_reply', 'riot_order'].some((key) => initialUrl.searchParams.has(key));
+		function whenNear(start) {
+			if (urgent || !('IntersectionObserver' in window)) {
+				start();
+				return;
+			}
+			const observer = new IntersectionObserver((entries) => {
+				if (entries.some((entry) => entry.isIntersecting)) {
+					observer.disconnect();
+					start();
+				}
+			}, {rootMargin: '1200px 0px'});
+			observer.observe(root);
+		}
+
 		if (!form) {
-			startSession();
+			whenNear(startSession);
 			continue;
 		}
 		const message = form.querySelector('[data-riot-message]');
@@ -399,10 +457,62 @@
 						consent.checked = identityKnown;
 						updateIdentity();
 					}
+					if (data.pending?.length) watchPending();
 					return data;
 				}).catch(() => { session = null; });
 			}
 			return session;
+		}
+
+		// A held comment becomes public once it is approved. Check back for a few minutes while the page is open.
+		const checkDelays = [8, 12, 15, 20, 25, 30, 45, 60, 90].map((seconds) => seconds * 1000);
+		let watching = false;
+		async function watchPending() {
+			if (watching) return;
+			watching = true;
+			try {
+				for (const delay of checkDelays) {
+					await sleep(delay);
+					while (document.visibilityState === 'hidden') {
+						await new Promise((resolve) => document.addEventListener('visibilitychange', resolve, {once: true}));
+					}
+					if (!pending.size) return;
+					let data;
+					try {
+						data = await api({view: 'receipt', ids: [...pending.keys()].join(',')});
+					} catch {
+						continue;
+					}
+					let published = null;
+					let closed = false;
+					for (const item of data.items) {
+						if (item.status === 'pending') continue;
+						// Anything else is no longer awaiting approval. Only an approved comment replaces its preview.
+						pending.delete(item.id);
+						const preview = root.querySelector('#comment-' + item.id + '[data-riot-pending]');
+						if (preview) {
+							const container = preview.parentElement;
+							preview.remove();
+							if (!container.children.length && container.classList.contains('riot-children')) container.remove();
+						}
+						if (item.status !== 'approved') {
+							closed = true;
+							continue;
+						}
+						published = insertComment(item);
+						if (!item.parent && order === 'oldest' && more.dataset.cursor) published.setAttribute('data-riot-later', '');
+					}
+					if (published || closed) {
+						setCount(data.count, data.total);
+						if (!posting && !['submitting', 'failed', 'rejected'].includes(feedback.dataset.status)) {
+							const outcome = published ? data.live : data.closed;
+							showFeedback(outcome.status, outcome.detail, outcome.title);
+						}
+					}
+				}
+			} finally {
+				watching = false;
+			}
 		}
 
 		function moveForm(id, author, focus = true) {
@@ -449,7 +559,8 @@
 			});
 		}
 
-		loadSession(true);
+		whenNear(() => loadSession(true));
+		form.addEventListener('focusin', () => loadSession(true));
 
 		form.addEventListener('submit', async (event) => {
 			event.preventDefault();
@@ -457,7 +568,7 @@
 			posting = true;
 			button.disabled = true;
 			try {
-				await session;
+				await (session || loadSession(true));
 				if (identity && !revealed && !identityKnown) {
 					revealIdentity();
 					return;
@@ -528,6 +639,7 @@
 				}
 				added.firstElementChild.focus({preventScroll: true});
 				added.scrollIntoView({block: 'nearest'});
+				if (result.status === 'pending') watchPending();
 			} catch (error) {
 				const result = error.result || {};
 				let detail = result.detail || error.message;

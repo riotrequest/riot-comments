@@ -43,7 +43,7 @@ function riot_comments_feedback( $result = array(), $class = '' ) {
 	<?php
 }
 
-function riot_comments_page( $post_id, $order, $cursor = '', $focus = 0 ) {
+function riot_comments_page( $post_id, $order, $cursor = '', $focus = 0, $with_likes = false ) {
 	global $wpdb;
 	$direction = 'oldest' === $order ? 'ASC' : 'DESC';
 	$args = array(
@@ -100,6 +100,7 @@ function riot_comments_page( $post_id, $order, $cursor = '', $focus = 0 ) {
 
 	$children = array();
 	$parents  = wp_list_pluck( $roots, 'comment_ID' );
+	$like_ids = $parents;
 	while ( $parents ) {
 		$replies = get_comments( array(
 			'post_id'    => $post_id,
@@ -110,13 +111,17 @@ function riot_comments_page( $post_id, $order, $cursor = '', $focus = 0 ) {
 		$parents = wp_list_pluck( $replies, 'comment_ID' );
 		foreach ( $replies as $reply ) {
 			$children[ $reply->comment_parent ][] = $reply;
+			if ( $with_likes ) {
+				$like_ids[] = $reply->comment_ID;
+			}
 		}
 	}
 
 	$html = '';
 	$open = comments_open( $post_id ) && ( is_user_logged_in() || ! get_option( 'comment_registration' ) );
+	$likes = $with_likes ? riot_comments_like_states( $like_ids ) : null;
 	foreach ( $roots as $root ) {
-		$html .= riot_comments_item( $root, $children, $open );
+		$html .= riot_comments_item( $root, $children, $open, false, $likes );
 	}
 	$last = end( $roots );
 	return array(
@@ -136,7 +141,7 @@ function riot_comments_post_author( $post_id ) {
 	return $authors[ $post_id ];
 }
 
-function riot_comments_item( $comment, $children, $open, $pending = false ) {
+function riot_comments_item( $comment, $children, $open, $pending = false, $likes = null ) {
 	$id      = (int) $comment->comment_ID;
 	$author  = wp_strip_all_tags( get_comment_author( $comment ) );
 	$initial = function_exists( 'mb_substr' ) ? mb_substr( $author, 0, 1, 'UTF-8' ) : ( preg_match( '/^./u', $author, $m ) ? $m[0] : '' );
@@ -174,6 +179,12 @@ function riot_comments_item( $comment, $children, $open, $pending = false ) {
 								<?php esc_html_e( 'Reply', 'riot-comments' ); ?><span class="riot-sr"><?php echo esc_html( sprintf( __( ' to %s', 'riot-comments' ), $author ) ); ?></span>
 							</a>
 						<?php endif; ?>
+						<?php if ( null !== $likes && in_array( $comment->comment_type, array( '', 'comment' ), true ) ) : ?>
+							<button type="button" class="riot-like" data-like="<?php echo esc_attr( $id ); ?>" aria-label="<?php echo esc_attr( sprintf( __( 'Like comment by %s', 'riot-comments' ), $author ) ); ?>" aria-pressed="<?php echo empty( $likes[ $id ]->liked ) ? 'false' : 'true'; ?>" aria-describedby="riot-like-count-<?php echo esc_attr( $id ); ?>">
+								<span aria-hidden="true">👍</span>
+								<span id="riot-like-count-<?php echo esc_attr( $id ); ?>" data-like-count><?php echo esc_html( number_format_i18n( (int) ( $likes[ $id ]->total ?? 0 ) ) ); ?></span>
+							</button>
+						<?php endif; ?>
 						<button type="button" class="riot-copy-link" data-copy="<?php echo esc_url( $link . '#comment-' . $id ); ?>" hidden>
 							<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.8 9.2a3 3 0 0 0 4.2 0l2.2-2.2a3 3 0 0 0-4.2-4.2l-.9.9M9.2 6.8a3 3 0 0 0-4.2 0L2.8 9a3 3 0 0 0 4.2 4.2l.9-.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
 							<span><?php esc_html_e( 'Copy link', 'riot-comments' ); ?></span>
@@ -185,7 +196,7 @@ function riot_comments_item( $comment, $children, $open, $pending = false ) {
 		<?php if ( ! empty( $children[ $id ] ) ) : ?>
 			<ol class="riot-comments-list riot-children">
 				<?php foreach ( $children[ $id ] as $reply ) {
-					echo riot_comments_item( $reply, $children, $open ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+					echo riot_comments_item( $reply, $children, $open, false, $likes ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 				} ?>
 			</ol>
 		<?php endif; ?>
@@ -298,6 +309,7 @@ function riot_comments_discussion( $post_id ) {
 		'server'    => __( 'The site hit a snag (error %s). Your draft is safe. Please try again.', 'riot-comments' ),
 		'retrying'  => __( 'Still working on it…', 'riot-comments' ),
 		'copied'    => __( 'Link copied', 'riot-comments' ),
+		'likeError' => __( 'Could not save your like. Please try again.', 'riot-comments' ),
 		'hintMac'   => __( '⌘ + Enter to post', 'riot-comments' ),
 		'jump'      => __( 'Comments', 'riot-comments' ),
 		'jumpEmpty' => __( 'Comment', 'riot-comments' ),

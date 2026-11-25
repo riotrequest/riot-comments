@@ -1,0 +1,8 @@
+.env*
+wp-config*.php
+*.key
+*.pem
+*.ppk
+*.sql
+*.sqlite*
+*.zip
