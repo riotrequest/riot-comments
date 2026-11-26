@@ -6,6 +6,8 @@ Readers start with **“What’s on your mind?”** and an empty box. They can w
 
 **WordPress 6.3+** · **PHP 7.4+** · **Vanilla JavaScript** · **MIT**
 
+![Riot Comments on a dark editorial theme, showing the guest composer, threaded replies, and likes](screenshots/discussion.png)
+
 ## The reader experience
 
 - **Write first.** Riot opens the name and email fields inline at submission. Signed-in readers and guests who chose to save their details can post directly.
@@ -16,6 +18,8 @@ Readers start with **“What’s on your mind?”** and an empty box. They can w
 - **Find the discussion fast.** An optional floating **Comments** button follows readers down the article and drops them straight into the composer.
 - **Small comforts.** The composer grows as you type, **Ctrl/⌘ + Enter** posts, recent comments show times like "5m ago", and every comment has a **Copy link** action.
 - **Post with JavaScript disabled.** The form, reply links, sorting, and pagination work through standard navigation.
+
+![An inline guest reply with the name and private email fields open below the draft](screenshots/guest-reply.png)
 
 ## The look
 
